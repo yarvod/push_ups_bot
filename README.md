@@ -76,12 +76,12 @@ uv run python scripts/admin.py init
 
 ## Запуск и ручной деплой
 
-На сервере проект размещается в **`/opt/pullups-bot`**, отдельный Compose project `pullups-bot`. Порты на хост не публикуются; существующие сервисы не затрагиваются.
+На сервере проект размещается в **`/root/pullups-bot`**, отдельный Compose project `pullups-bot`. Порты на хост не публикуются; существующие сервисы не затрагиваются.
 
 После загрузки репозитория и двух секретных файлов:
 
 ```sh
-cd /opt/pullups-bot
+cd /root/pullups-bot
 chmod 600 .env
 chown root:10001 secrets/google-service-account.json
 chmod 440 secrets/google-service-account.json
