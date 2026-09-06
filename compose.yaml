@@ -1,0 +1,70 @@
+name: pullups-bot
+
+x-app: &app
+  build: .
+  image: pullups-bot:local
+  env_file: .env
+  environment:
+    REDIS_URL: redis://redis:6379/0
+    GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google-service-account.json
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=32m,mode=1777
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  depends_on:
+    redis:
+      condition: service_healthy
+  logging:
+    driver: json-file
+    options:
+      max-size: "5m"
+      max-file: "3"
+  mem_limit: 256m
+
+services:
+  bot:
+    <<: *app
+    command: [python, -m, pullups_bot]
+    healthcheck:
+      test: [CMD, python, -m, pullups_bot.health]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  worker:
+    <<: *app
+    command: [arq, pullups_bot.worker.WorkerSettings, --custom-log-dict, pullups_bot.logging_config.LOGGING]
+    volumes:
+      - ./secrets/google-service-account.json:/run/secrets/google-service-account.json:ro
+    healthcheck:
+      test: [CMD, python, -m, pullups_bot.health, worker]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    stop_grace_period: 120s
+
+  redis:
+    image: redis:7.4-alpine
+    command: [redis-server, --appendonly, "yes", --appendfsync, always, --maxmemory, 128mb, --maxmemory-policy, noeviction]
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    mem_limit: 192m
+
+volumes:
+  redis-data:

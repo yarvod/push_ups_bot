@@ -1,0 +1,28 @@
+from contextlib import AbstractAsyncContextManager
+from datetime import date
+from typing import Protocol
+
+from pullups_bot.domain.models import Day, Member, Snapshot, Status
+
+
+class Repository(Protocol):
+    async def snapshot(self) -> Snapshot: ...
+    async def state(self, key: str) -> str | None: ...
+    async def save_state(self, key: str, value: str) -> None: ...
+    async def mark(
+        self,
+        day: Day,
+        member: Member,
+        status: Status,
+        event_id: str,
+        actor_id: int,
+        reason: str,
+        evidence: str,
+    ) -> bool: ...
+    async def event_exists(self, event_id: str) -> bool: ...
+    async def close_day(self, day: Day, event_id: str) -> None: ...
+    async def ensure_dates(self, through: date) -> None: ...
+
+
+class Mutex(Protocol):
+    def hold(self) -> AbstractAsyncContextManager[None]: ...
