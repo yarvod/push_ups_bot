@@ -4,13 +4,13 @@ from datetime import datetime
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
-from aiogram.types import ChatMemberUpdated, Message, ReactionTypeEmoji
+from aiogram.types import ChatMemberUpdated, Message, ReactionTypeEmoji, Update
 from dishka.integrations.aiogram import FromDishka
 
 from pullups_bot.application.ports import Repository
 from pullups_bot.application.service import ClubService
 from pullups_bot.config import Settings
-from pullups_bot.domain.models import RuleError, Status, cutoff_at
+from pullups_bot.domain.models import AdmissionPending, RuleError, Status, cutoff_at
 from pullups_bot.presentation.texts import debts, help_text, report, statistics
 
 logger = logging.getLogger(__name__)
@@ -22,10 +22,11 @@ def create_router() -> Router:
     @router.my_chat_member()
     async def membership(
         event: ChatMemberUpdated,
+        event_update: Update,
         service: FromDishka[ClubService],
-        repository: FromDishka[Repository],
         settings: FromDishka[Settings],
         bot: FromDishka[Bot],
+        defer_unknown_invitation: bool = True,
     ):
         old = event.old_chat_member.status
         new = event.new_chat_member.status
@@ -39,21 +40,24 @@ def create_router() -> Router:
         )
         if is_present and not was_present:
             if event.from_user.id != settings.owner_id:
+                if await service.accept_migration(
+                    event.chat.id, int(event.date.timestamp()), event_update.update_id
+                ):
+                    return
+                if defer_unknown_invitation:
+                    raise AdmissionPending
                 await bot.leave_chat(event.chat.id)
                 return
+            await service.remember_invitation(event.from_user.id, event.chat.id)
             # /setup explicitly binds the chat after Telegram privacy is configured.
         if not is_present:
-            async with service.mutex.hold():
-                if await repository.state("chat_id") == str(event.chat.id):
-                    await repository.save_state("chat_id", "")
+            await service.forget_chat(event.chat.id)
 
-    @router.message(F.migrate_to_chat_id)
-    async def migration(
-        message: Message, repository: FromDishka[Repository], service: FromDishka[ClubService]
-    ):
-        async with service.mutex.hold():
-            if await repository.state("chat_id") == str(message.chat.id):
-                await repository.save_state("chat_id", str(message.migrate_to_chat_id))
+    @router.message(F.migrate_to_chat_id | F.migrate_from_chat_id)
+    async def migration(message: Message, service: FromDishka[ClubService]):
+        old_chat = message.migrate_from_chat_id or message.chat.id
+        new_chat = message.migrate_to_chat_id or message.chat.id
+        await service.migrate_chat(old_chat, new_chat, int(message.date.timestamp()))
 
     @router.message(Command("setup"))
     async def setup(
@@ -67,6 +71,8 @@ def create_router() -> Router:
             raise RuleError("Подключить бота может только Ярик со своего аккаунта.")
         if message.chat.type not in {"group", "supergroup"}:
             raise RuleError("Добавь меня в беседу и напиши /setup там.")
+        # Owner confirmation also covers bots added before invitation tracking was introduced.
+        await service.remember_invitation(message.from_user.id, message.chat.id)
         assert message.bot is not None
         bot_user = await message.bot.get_me()
         membership = await message.bot.get_chat_member(message.chat.id, bot_user.id)

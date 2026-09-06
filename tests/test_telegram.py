@@ -13,7 +13,7 @@ from pullups_bot.application.ports import Mutex, Repository
 from pullups_bot.application.service import ClubService
 from pullups_bot.bootstrap import create_dispatcher
 from pullups_bot.config import Settings
-from pullups_bot.domain.models import RuleError, Status
+from pullups_bot.domain.models import AdmissionPending, RuleError, Status
 from pullups_bot.presentation import handlers
 
 TZ = ZoneInfo("Europe/Moscow")
@@ -183,7 +183,11 @@ async def test_only_owner_invitation_accepted(telegram, inviter, chat_type, prio
             },
         }
     )
-    await dp.feed_update(bot, update)
+    if inviter != 718724903:
+        with pytest.raises(AdmissionPending):
+            await dp.feed_update(bot, update)
+        assert not session.calls
+    await dp.feed_update(bot, update, defer_unknown_invitation=False)
     if inviter == 718724903:
         assert not session.calls
     else:
@@ -240,6 +244,157 @@ async def test_owner_setup(telegram):
         ),
     )
     assert any(call.__api_method__ == "sendMessage" for call in session.calls)
+
+
+def membership_update(bot, *, chat_id, actor=101, old="left", new="member", update_id=20):
+    def member(status):
+        value = {"status": status, "user": {"id": bot.id, "first_name": "bot", "is_bot": True}}
+        if status == "administrator":
+            value.update(
+                dict.fromkeys(
+                    (
+                        "can_be_edited",
+                        "is_anonymous",
+                        "can_manage_chat",
+                        "can_delete_messages",
+                        "can_manage_video_chats",
+                        "can_restrict_members",
+                        "can_promote_members",
+                        "can_change_info",
+                        "can_invite_users",
+                        "can_post_stories",
+                        "can_edit_stories",
+                        "can_delete_stories",
+                        "can_send_welcome_messages",
+                    ),
+                    False,
+                )
+            )
+        if status == "restricted":
+            value.update(
+                dict.fromkeys(
+                    (
+                        "can_send_messages",
+                        "can_send_audios",
+                        "can_send_documents",
+                        "can_send_photos",
+                        "can_send_videos",
+                        "can_send_video_notes",
+                        "can_send_voice_notes",
+                        "can_send_polls",
+                        "can_send_other_messages",
+                        "can_add_web_page_previews",
+                        "can_change_info",
+                        "can_invite_users",
+                        "can_pin_messages",
+                        "can_manage_topics",
+                        "can_react_to_messages",
+                        "can_edit_tag",
+                    ),
+                    False,
+                )
+            )
+            value.update(is_member=True, until_date=0)
+        return value
+
+    return Update.model_validate(
+        {
+            "update_id": update_id,
+            "my_chat_member": {
+                "chat": {"id": chat_id, "type": "supergroup"},
+                "date": int(FrozenDateTime.now(TZ).timestamp()),
+                "from": {"id": actor, "first_name": "admin", "is_bot": False},
+                "old_chat_member": member(old),
+                "new_chat_member": member(new),
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("member", "administrator"),
+        ("member", "restricted"),
+        ("restricted", "administrator"),
+        ("administrator", "member"),
+    ],
+)
+async def test_other_admin_can_change_bot_permissions(telegram, old, new):
+    dp, bot, session, _ = telegram
+    await dp.feed_update(bot, membership_update(bot, chat_id=-10042, old=old, new=new))
+    assert not session.calls
+
+
+@pytest.mark.parametrize("already_active", [False, True])
+async def test_admin_promotion_migrates_owner_invited_group(telegram, repo, already_active):
+    from arq import Retry
+
+    from pullups_bot.worker import process_update
+
+    dp, bot, session, container = telegram
+    repo.states.clear()
+    await dp.feed_update(bot, membership_update(bot, chat_id=-999, actor=718724903, update_id=10))
+    if already_active:
+        repo.states["chat_id"] = "-999"
+    ctx = {"container": container, "dispatcher": dp, "job_try": 1}
+    invitation = membership_update(bot, chat_id=-10099)
+    with pytest.raises(Retry):
+        await process_update(ctx, invitation.model_dump(mode="json"))
+    assert not session.calls
+
+    proof = message_update(chat={"id": -10099, "type": "supergroup"}, migrate_from_chat_id=-999)
+    await process_update(ctx, proof.model_dump(mode="json"))
+    await dp.feed_update(
+        bot, membership_update(bot, chat_id=-10099, old="member", new="restricted")
+    )
+    await dp.feed_update(
+        bot, membership_update(bot, chat_id=-10099, old="restricted", new="administrator")
+    )
+    ctx["job_try"] = 2
+    await process_update(ctx, invitation.model_dump(mode="json"))
+    # ARQ may redeliver a completed update after a lost result; it must remain safe.
+    await process_update(ctx, invitation.model_dump(mode="json"))
+    assert not session.calls
+    assert repo.states.get("chat_id") == ("-10099" if already_active else None)
+
+    # Telegram also emits a second migration message; it must not permit a fresh invitation.
+    await dp.feed_update(
+        bot, message_update(chat={"id": -999, "type": "group"}, migrate_to_chat_id=-10099)
+    )
+    fresh_invitation = membership_update(bot, chat_id=-10099, update_id=50)
+    await process_update(ctx, fresh_invitation.model_dump(mode="json"))
+    assert session.calls[-1].__api_method__ == "leaveChat"
+
+
+async def test_migration_of_unapproved_group_does_not_bypass_owner(telegram, repo):
+    dp, bot, session, _ = telegram
+    await dp.feed_update(
+        bot, message_update(chat={"id": -10099, "type": "supergroup"}, migrate_from_chat_id=-999)
+    )
+    await dp.feed_update(
+        bot,
+        membership_update(bot, chat_id=-10099, new="administrator"),
+        defer_unknown_invitation=False,
+    )
+    assert session.calls[-1].__api_method__ == "leaveChat"
+    assert repo.states["chat_id"] == "-10042"
+
+
+async def test_old_migration_does_not_authorize_later_invitation(service):
+    await service.remember_invitation(718724903, -999)
+    await service.migrate_chat(-999, -10099, 1000)
+    assert not await service.accept_migration(-10099, 1060, 20)
+
+
+async def test_leaving_revokes_migration_permission(service, repo):
+    await service.remember_invitation(718724903, -999)
+    await service.migrate_chat(-999, -10099, 1000)
+    assert await service.accept_migration(-10099, 1000, 20)
+    repo.states["chat_id"] = "-10099"
+    await service.forget_chat(-10099)
+    assert not await service.accept_migration(-10099, 1000, 21)
+    assert not repo.states["chat_id"]
 
 
 async def test_manual_command_injection(telegram, repo):

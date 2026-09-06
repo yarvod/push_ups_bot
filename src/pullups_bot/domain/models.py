@@ -7,6 +7,10 @@ class RuleError(Exception):
     """A user-facing violation of club rules."""
 
 
+class AdmissionPending(Exception):
+    """Wait for Telegram's subsequent group-migration service messages."""
+
+
 class Status(StrEnum):
     DONE = "✅ Отжался"
     EXCUSED = "🟡 Уважительная"

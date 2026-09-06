@@ -13,6 +13,53 @@ class ClubService:
         self.owner_id = owner_id
         self.deadline = deadline
 
+    async def remember_invitation(self, actor_id: int, chat_id: int) -> None:
+        if actor_id != self.owner_id:
+            raise RuleError("Подключить бота может только Ярик.")
+        async with self.mutex.hold():
+            await self.repository.save_state(f"admitted:{chat_id}", str(self.owner_id))
+
+    async def migrate_chat(self, old_chat: int, new_chat: int, occurred_at: int) -> None:
+        async with self.mutex.hold():
+            active = await self.repository.state("chat_id")
+            admitted = await self.repository.state(f"admitted:{old_chat}")
+            if admitted != str(self.owner_id) and active != str(old_chat):
+                return
+            # Both migration messages may arrive. Do not recreate a consumed admission grant.
+            migration_key = f"migrated:{old_chat}"
+            if await self.repository.state(migration_key) != str(new_chat):
+                await self.repository.save_state(f"admitted:{new_chat}", str(self.owner_id))
+                await self.repository.save_state(f"migration_grant:{new_chat}", str(occurred_at))
+                await self.repository.save_state(migration_key, str(new_chat))
+            if active == str(old_chat):
+                await self.repository.save_state("chat_id", str(new_chat))
+
+    async def accept_migration(self, chat_id: int, occurred_at: int, event_id: int) -> bool:
+        async with self.mutex.hold():
+            receipt_key = f"migration_accepted:{chat_id}"
+            receipt = await self.repository.state(receipt_key)
+            if receipt:
+                return receipt == str(event_id)
+            grant_key = f"migration_grant:{chat_id}"
+            grant = await self.repository.state(grant_key)
+            admitted = await self.repository.state(f"admitted:{chat_id}")
+            if not grant or admitted != str(self.owner_id):
+                return False
+            if abs(int(grant) - occurred_at) > 10:
+                return False
+            # A worker retry must accept the same update, but never another invitation.
+            await self.repository.save_state(receipt_key, str(event_id))
+            await self.repository.save_state(grant_key, "")
+            return True
+
+    async def forget_chat(self, chat_id: int) -> None:
+        async with self.mutex.hold():
+            await self.repository.save_state(f"admitted:{chat_id}", "")
+            await self.repository.save_state(f"migration_grant:{chat_id}", "")
+            await self.repository.save_state(f"migration_accepted:{chat_id}", "")
+            if await self.repository.state("chat_id") == str(chat_id):
+                await self.repository.save_state("chat_id", "")
+
     async def activate(self, actor_id: int, chat_id: int, today: date) -> None:
         if actor_id != self.owner_id:
             raise RuleError("Подключать беседу может только Ярик. Не лезь к рубильнику 😏")

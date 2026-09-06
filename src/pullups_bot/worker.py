@@ -12,7 +12,7 @@ from pullups_bot.application.ports import Mutex, Repository
 from pullups_bot.application.service import ClubService
 from pullups_bot.bootstrap import create_container, create_dispatcher
 from pullups_bot.config import Settings
-from pullups_bot.domain.models import RuleError, Status
+from pullups_bot.domain.models import AdmissionPending, RuleError, Status
 from pullups_bot.infrastructure.sheets import SheetsError, SheetsRepository
 from pullups_bot.presentation.texts import report
 
@@ -39,7 +39,12 @@ async def process_update(ctx: dict, payload: dict) -> None:
     bot = await ctx["container"].get(Bot)
     update = Update.model_validate(payload, context={"bot": bot})
     try:
-        await ctx["dispatcher"].feed_update(bot, update)
+        await ctx["dispatcher"].feed_update(
+            bot, update, defer_unknown_invitation=ctx["job_try"] == 1
+        )
+    except AdmissionPending:
+        # Do not block the single consumer: migration messages must be processed first.
+        raise Retry(defer=10) from None
     except RuleError as exc:
         if update.message:
             await update.message.answer(escape(str(exc)))
