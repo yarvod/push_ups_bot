@@ -8,6 +8,7 @@ from arq.connections import ArqRedis
 
 from pullups_bot.bootstrap import create_container
 from pullups_bot.config import Settings
+from pullups_bot.presentation.commands import register_commands
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,8 @@ async def main() -> None:
             raise RuntimeError(
                 "Existing webhook detected. Remove it explicitly before long polling."
             )
+        await register_commands(bot)
+        logger.info("Telegram command menu registered")
         offset = None
         allowed = ["message", "my_chat_member"]
         while True:
