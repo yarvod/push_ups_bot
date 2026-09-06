@@ -29,12 +29,20 @@ def create_router() -> Router:
     ):
         old = event.old_chat_member.status
         new = event.new_chat_member.status
-        if new in {"member", "administrator"} and old in {"left", "kicked"}:
+        if event.chat.type not in {"group", "supergroup", "channel"}:
+            return
+        was_present = old not in {"left", "kicked"} and (
+            old != "restricted" or getattr(event.old_chat_member, "is_member", False)
+        )
+        is_present = new not in {"left", "kicked"} and (
+            new != "restricted" or getattr(event.new_chat_member, "is_member", False)
+        )
+        if is_present and not was_present:
             if event.from_user.id != settings.owner_id:
                 await bot.leave_chat(event.chat.id)
                 return
             # /setup explicitly binds the chat after Telegram privacy is configured.
-        if new in {"left", "kicked"}:
+        if not is_present:
             async with service.mutex.hold():
                 if await repository.state("chat_id") == str(event.chat.id):
                     await repository.save_state("chat_id", "")

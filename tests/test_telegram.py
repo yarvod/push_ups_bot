@@ -13,7 +13,7 @@ from pullups_bot.application.ports import Mutex, Repository
 from pullups_bot.application.service import ClubService
 from pullups_bot.bootstrap import create_dispatcher
 from pullups_bot.config import Settings
-from pullups_bot.domain.models import Status
+from pullups_bot.domain.models import RuleError, Status
 from pullups_bot.presentation import handlers
 
 TZ = ZoneInfo("Europe/Moscow")
@@ -154,17 +154,26 @@ async def test_unknown_chat_ignored(telegram, repo):
     assert not session.calls and repo.writes == 0
 
 
-async def test_only_owner_invitation_accepted(telegram):
+@pytest.mark.parametrize("inviter", [101, 718724903])
+@pytest.mark.parametrize("chat_type", ["group", "supergroup", "channel"])
+@pytest.mark.parametrize("prior", ["left", "kicked"])
+async def test_only_owner_invitation_accepted(telegram, inviter, chat_type, prior):
     dp, bot, session, _ = telegram
     update = Update.model_validate(
         {
             "update_id": 20,
             "my_chat_member": {
-                "chat": {"id": -999, "type": "group"},
+                "chat": {"id": -999, "type": chat_type},
                 "date": int(FrozenDateTime.now(TZ).timestamp()),
-                "from": {"id": 101, "first_name": "other", "is_bot": False},
+                "from": {
+                    "id": inviter,
+                    "first_name": "Ярик",
+                    "is_bot": False,
+                    "username": "yarvod",
+                },
                 "old_chat_member": {
-                    "status": "left",
+                    "status": prior,
+                    "until_date": 0,
                     "user": {"id": bot.id, "first_name": "bot", "is_bot": True},
                 },
                 "new_chat_member": {
@@ -175,7 +184,42 @@ async def test_only_owner_invitation_accepted(telegram):
         }
     )
     await dp.feed_update(bot, update)
-    assert session.calls[0].__api_method__ == "leaveChat"
+    if inviter == 718724903:
+        assert not session.calls
+    else:
+        assert session.calls[0].__api_method__ == "leaveChat"
+
+
+async def test_other_user_cannot_setup_even_with_owner_username(telegram, repo):
+    dp, bot, session, _ = telegram
+    with pytest.raises(RuleError):
+        await dp.feed_update(
+            bot,
+            message_update(
+                text="/setup",
+                entities=[{"type": "bot_command", "offset": 0, "length": 6}],
+                **{
+                    "from": {"id": 101, "first_name": "Ярик", "is_bot": False, "username": "yarvod"}
+                },
+            ),
+        )
+    assert not session.calls
+    assert repo.states["chat_id"] == "-10042"
+
+
+async def test_owner_cannot_setup_anonymously(telegram):
+    dp, bot, session, _ = telegram
+    with pytest.raises(RuleError):
+        await dp.feed_update(
+            bot,
+            message_update(
+                text="/setup",
+                entities=[{"type": "bot_command", "offset": 0, "length": 6}],
+                sender_chat={"id": -10042, "type": "supergroup"},
+                **{"from": {"id": 718724903, "first_name": "Ярик", "is_bot": False}},
+            ),
+        )
+    assert not session.calls
 
 
 async def test_owner_setup(telegram):
