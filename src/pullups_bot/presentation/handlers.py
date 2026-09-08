@@ -11,7 +11,7 @@ from pullups_bot.application.ports import Repository
 from pullups_bot.application.service import ClubService
 from pullups_bot.config import Settings
 from pullups_bot.domain.models import AdmissionPending, RuleError, Status, cutoff_at
-from pullups_bot.presentation.texts import debts, help_text, report, statistics
+from pullups_bot.presentation.texts import debts, help_text, reply_banter, report, statistics
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +226,7 @@ def create_router() -> Router:
         if not settings.min_video_seconds <= clip.duration <= settings.max_video_seconds:
             await message.reply(
                 f"Нужно {settings.min_video_seconds}–{settings.max_video_seconds} секунд, "
-                f"а тут {clip.duration}. Минута славы сама себя не снимет 😏"
+                f"а тут {clip.duration}. Подгони хронометраж, Спилберг 😏"
             )
             return
         sent_at = message.date.astimezone(settings.tz)
@@ -253,14 +253,27 @@ def create_router() -> Router:
         )
         if changed:
             try:
-                await message.react([ReactionTypeEmoji(emoji="🔥")])
+                await message.react([ReactionTypeEmoji(emoji="🍾")])
             except TelegramBadRequest:
                 logger.info("Reactions are unavailable in the group")
             phrases = [
-                "Засчитано. Грудь качается, пиво экономится 💪",
-                "Есть контакт с полом! Сегодня пивной налог тебя не тронет 🍺",
-                "Заебись, принято! Диван потерял ещё одного бойца 🔥",
+                "🍻 Засчитано. Грудь качается, пиво экономится 💪",
+                "🍻 Есть контакт с полом! Сегодня пивной налог тебя не тронет.",
+                "🍻 Заебись, принято! Диван потерял ещё одного бойца 💪",
             ]
             await message.reply(phrases[message.message_id % len(phrases)])
+
+    @router.message(F.text, F.reply_to_message)
+    async def banter(message: Message, bot: FromDishka[Bot], repository: FromDishka[Repository]):
+        if await repository.state("chat_id") != str(message.chat.id):
+            return
+        if not message.from_user or message.from_user.is_bot or message.sender_chat:
+            return
+        replied = message.reply_to_message
+        if not replied or not replied.from_user or replied.from_user.id != bot.id:
+            return
+        if any(entity.type == "bot_command" for entity in message.entities or []):
+            return
+        await message.reply(reply_banter(message.message_id))
 
     return router

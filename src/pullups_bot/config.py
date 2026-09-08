@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     reminder_time: time = time(13)
     summary_time: time = time(18)
     min_video_seconds: int = Field(default=50, ge=1)
-    max_video_seconds: int = Field(default=90, ge=1)
+    max_video_seconds: int = Field(default=600, ge=1)
     google_application_credentials: str = "secrets/google-service-account.json"
     redis_url: str = "redis://localhost:6379/0"
 

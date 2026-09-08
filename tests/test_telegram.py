@@ -119,17 +119,90 @@ async def test_real_aiogram_dishka_video_pipeline(telegram, repo):
     dp, bot, session, _ = telegram
     await dp.feed_update(bot, message_update(video_note=clip()))
     assert repo.days[1].statuses["Саня"] == Status.DONE
-    assert any(call.__api_method__ == "setMessageReaction" for call in session.calls)
+    reaction = next(call for call in session.calls if call.__api_method__ == "setMessageReaction")
+    assert reaction.reaction[0].emoji == "🍾"
     assert any(call.__api_method__ == "sendMessage" for call in session.calls)
     await dp.feed_update(bot, message_update(video_note=clip()))
     assert repo.writes == 1
 
 
-@pytest.mark.parametrize("duration", [1, 49, 91, 600])
+@pytest.mark.parametrize("duration", [1, 49, 601, 1200])
 async def test_wrong_duration_rejected(telegram, repo, duration):
     dp, bot, _, _ = telegram
     await dp.feed_update(bot, message_update(video_note=clip(duration)))
     assert repo.writes == 0
+
+
+@pytest.mark.parametrize("duration", [50, 91, 103, 181, 240, 600])
+async def test_long_video_accepted(telegram, repo, duration):
+    dp, bot, _, _ = telegram
+    await dp.feed_update(
+        bot,
+        message_update(
+            video={
+                "file_id": "video1",
+                "file_unique_id": "long-video",
+                "width": 1280,
+                "height": 720,
+                "duration": duration,
+            }
+        ),
+    )
+    assert repo.days[1].statuses["Саня"] == Status.DONE
+
+
+def reply_to(author_id):
+    return {
+        "message_id": 5,
+        "date": int(FrozenDateTime.now(TZ).timestamp()),
+        "chat": {"id": -10042, "type": "supergroup"},
+        "from": {"id": author_id, "first_name": "bot", "is_bot": True},
+        "text": "Пивной надзор на связи",
+    }
+
+
+async def test_text_reply_to_bot_gets_banter(telegram, repo):
+    dp, bot, session, _ = telegram
+    await dp.feed_update(
+        bot, message_update(text="ну ты и бухгалтер", reply_to_message=reply_to(bot.id))
+    )
+    replies = [call for call in session.calls if isinstance(call, SendMessage)]
+    assert len(replies) == 1 and "нахуй" in replies[0].text
+    assert replies[0].reply_parameters.message_id == 10
+    assert repo.writes == 0
+
+
+@pytest.mark.parametrize(
+    "case", ["private", "other_chat", "other_author", "bot_sender", "unknown_command"]
+)
+async def test_banter_is_limited_to_human_replies_in_club(telegram, case):
+    dp, bot, session, _ = telegram
+    fields = {"text": "привет", "reply_to_message": reply_to(bot.id)}
+    if case == "private":
+        fields["chat"] = {"id": 101, "type": "private"}
+    elif case == "other_chat":
+        fields["chat"] = {"id": -999, "type": "group"}
+    elif case == "other_author":
+        fields["reply_to_message"] = reply_to(456)
+    elif case == "bot_sender":
+        fields["from"] = {"id": 456, "first_name": "other bot", "is_bot": True}
+    else:
+        fields.update(text="/unknown", entities=[{"type": "bot_command", "offset": 0, "length": 8}])
+    await dp.feed_update(bot, message_update(**fields))
+    assert not session.calls
+
+
+@pytest.mark.parametrize("content", ["command", "video"])
+async def test_reply_still_processes_commands_and_video(telegram, repo, content):
+    dp, bot, session, _ = telegram
+    fields = {"reply_to_message": reply_to(bot.id)}
+    if content == "command":
+        fields.update(text="/done", entities=[{"type": "bot_command", "offset": 0, "length": 5}])
+    else:
+        fields["video_note"] = clip()
+    await dp.feed_update(bot, message_update(**fields))
+    assert repo.days[1].statuses["Саня"] == Status.DONE
+    assert all("нахуй" not in call.text for call in session.calls if isinstance(call, SendMessage))
 
 
 async def test_forwarded_video_rejected(telegram, repo):
