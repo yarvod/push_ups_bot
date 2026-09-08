@@ -10,7 +10,7 @@ COMMANDS = (
     BotCommand(command="sheet", description="Открыть таблицу"),
     BotCommand(command="help", description="Правила и помощь"),
     BotCommand(command="setup", description="Подключить беседу — только Ярик"),
-    BotCommand(command="excuse", description="Подтвердить уважительную причину — только Ярик"),
+    BotCommand(command="excuse", description="Уважительная причина: /excuse заболел"),
     BotCommand(command="bind", description="Привязать Telegram ID участника — только Ярик"),
     BotCommand(command="unbind", description="Отключить беседу — только Ярик"),
 )

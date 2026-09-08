@@ -128,12 +128,8 @@ class ClubService:
             if not automatic and actor_id != self.owner_id:
                 if day != now.date() or now >= cutoff_at(day, self.deadline, now):
                     raise RuleError("День закрыт. Исправить прошлое может только Ярик.")
-                if status == Status.EXCUSED:
-                    raise RuleError(
-                        "Уважительную причину подтверждает Ярик: /excuse @username причина."
-                    )
             if status == Status.EXCUSED and not reason.strip():
-                raise RuleError("Укажи уважительную причину после команды.")
+                raise RuleError("Укажи уважительную причину: /excuse заболел.")
             selected = snapshot.day(day)
             if automatic and selected.statuses[member.name] in (Status.DONE, Status.EXCUSED):
                 return False

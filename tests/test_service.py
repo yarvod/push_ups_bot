@@ -66,8 +66,8 @@ async def test_nonowner_cannot_correct_previous_day(service):
         await service.record(**record_args(day=date(2026, 9, 5)))
 
 
-@pytest.mark.parametrize("actor,target,reason", [(101, None, "болею"), (718724903, "@weebat", "")])
-async def test_excuse_needs_owner_and_reason(service, actor, target, reason):
+@pytest.mark.parametrize("actor,target,reason", [(101, None, " "), (718724903, "@weebat", "")])
+async def test_excuse_needs_reason(service, actor, target, reason):
     with pytest.raises(RuleError):
         await service.record(
             **record_args(actor_id=actor, target=target, status=Status.EXCUSED, reason=reason)
@@ -79,6 +79,27 @@ async def test_excuse_is_saved(service, repo):
         **record_args(actor_id=718724903, target="@weebat", status=Status.EXCUSED, reason="болеет")
     )
     assert repo.days[1].statuses["Саня"] == Status.EXCUSED
+
+
+async def test_member_can_excuse_self(service, repo):
+    await service.record(**record_args(status=Status.EXCUSED, reason="болею"))
+    assert repo.days[1].statuses["Саня"] == Status.EXCUSED
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"target": "@atep_art"},
+        {"day": date(2026, 9, 5)},
+        {"day": date(2026, 9, 7)},
+        {"now": datetime(2026, 9, 7, 0, 0, tzinfo=NOW.tzinfo)},
+        {"chat_id": 101},
+    ],
+)
+async def test_self_excuse_preserves_authorization_and_deadline(service, repo, overrides):
+    with pytest.raises(RuleError):
+        await service.record(**record_args(status=Status.EXCUSED, reason="болею", **overrides))
+    assert repo.writes == 0
 
 
 async def test_id_survives_username_change(service):

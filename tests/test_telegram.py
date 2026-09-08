@@ -479,6 +479,18 @@ async def test_manual_command_injection(telegram, repo):
     assert repo.days[1].statuses["Саня"] == Status.DONE
 
 
+async def test_member_excuse_command(telegram, repo):
+    dp, bot, session, _ = telegram
+    await dp.feed_update(
+        bot,
+        message_update(
+            text="/excuse заболел", entities=[{"type": "bot_command", "offset": 0, "length": 7}]
+        ),
+    )
+    assert repo.days[1].statuses["Саня"] == Status.EXCUSED
+    assert any(isinstance(call, SendMessage) and "Записал" in call.text for call in session.calls)
+
+
 async def test_scheduler_sends_once_per_day(telegram, repo, settings, monkeypatch):
     from pullups_bot import worker
 
