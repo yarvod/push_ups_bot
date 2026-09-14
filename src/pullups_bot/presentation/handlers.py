@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import date, datetime
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -7,10 +7,12 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import ChatMemberUpdated, Message, ReactionTypeEmoji, Update
 from dishka.integrations.aiogram import FromDishka
 
-from pullups_bot.application.ports import Repository
+from pullups_bot.application.manual import complete_manual
+from pullups_bot.application.ports import ManualPromptStore, Repository
 from pullups_bot.application.service import ClubService
 from pullups_bot.config import Settings
 from pullups_bot.domain.models import AdmissionPending, RuleError, Status, cutoff_at
+from pullups_bot.presentation.manual import PROMPT_PREFIX, handle_manual
 from pullups_bot.presentation.texts import debts, help_text, reply_banter, report, statistics
 
 logger = logging.getLogger(__name__)
@@ -172,36 +174,18 @@ def create_router() -> Router:
         command: CommandObject,
         service: FromDishka[ClubService],
         settings: FromDishka[Settings],
+        prompts: FromDishka[ManualPromptStore],
+        repository: FromDishka[Repository],
     ):
-        if not message.from_user or message.sender_chat:
-            raise RuleError("Отправь команду от своего аккаунта, без анонимного админа.")
-        args = (command.args or "").split()
-        target = args.pop(0) if args and args[0].startswith("@") else None
-        now = datetime.now(settings.tz)
-        target_day = now.date()
-        if args and len(args[0]) == 10 and args[0][4:5] == "-":
-            try:
-                target_day = datetime.strptime(args.pop(0), "%Y-%m-%d").date()
-            except ValueError:
-                raise RuleError("Дата должна быть ГГГГ-ММ-ДД.") from None
-        status = {"done": Status.DONE, "miss": Status.MISSED, "excuse": Status.EXCUSED}[
-            command.command.casefold()
-        ]
-        changed = await service.record(
-            chat_id=message.chat.id,
-            actor_id=message.from_user.id,
-            username=message.from_user.username,
-            target=target,
-            day=target_day,
-            status=status,
-            now=now,
-            event_id=f"manual:{message.chat.id}:{message.message_id}",
-            reason=" ".join(args),
+        await handle_manual(
+            message,
+            command.command.casefold(),
+            command.args or "",
+            service,
+            prompts,
+            repository,
+            now=datetime.now(settings.tz),
         )
-        if changed:
-            await message.answer(
-                f"Записал: {status} за {target_day:%d.%m.%Y}. Бухгалтерия всё помнит 🍺"
-            )
 
     @router.message(F.video | F.video_note | (F.document.mime_type.startswith("video/")))
     async def video(
@@ -264,7 +248,14 @@ def create_router() -> Router:
             await message.reply(phrases[message.message_id % len(phrases)])
 
     @router.message(F.text, F.reply_to_message)
-    async def banter(message: Message, bot: FromDishka[Bot], repository: FromDishka[Repository]):
+    async def bot_reply(
+        message: Message,
+        bot: FromDishka[Bot],
+        repository: FromDishka[Repository],
+        prompts: FromDishka[ManualPromptStore],
+        service: FromDishka[ClubService],
+        settings: FromDishka[Settings],
+    ):
         if await repository.state("chat_id") != str(message.chat.id):
             return
         if not message.from_user or message.from_user.is_bot or message.sender_chat:
@@ -273,6 +264,36 @@ def create_router() -> Router:
         if not replied or not replied.from_user or replied.from_user.id != bot.id:
             return
         if any(entity.type == "bot_command" for entity in message.entities or []):
+            return
+        prompt = await prompts.get(message.chat.id, replied.message_id)
+        if prompt:
+            if message.from_user.id != prompt.actor_id:
+                await message.reply("Это чужой запрос. Для своей отметки выбери команду в меню.")
+                return
+            if (message.text or "").strip().casefold() == "отмена":
+                if await repository.event_exists(
+                    f"manual-prompt:{message.chat.id}:{replied.message_id}"
+                ):
+                    await message.reply("Отметка уже записана. Измени её новой командой.")
+                    return
+                await prompts.delete(message.chat.id, replied.message_id)
+                await message.reply("Отменил. Ничего не записано.")
+                return
+            arguments = complete_manual(prompt, message.text or "")
+            await handle_manual(
+                message,
+                prompt.command,
+                arguments,
+                service,
+                prompts,
+                repository,
+                default_day=date.fromisoformat(prompt.day),
+                prompt_id=replied.message_id,
+                now=datetime.now(settings.tz),
+            )
+            return
+        if (replied.text or "").startswith(PROMPT_PREFIX):
+            await message.reply("Запрос истёк или отменён. Выбери команду заново.")
             return
         await message.reply(reply_banter(message.message_id))
 

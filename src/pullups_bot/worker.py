@@ -7,6 +7,8 @@ from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter, Telegra
 from aiogram.types import Update
 from arq import Retry, cron
 from arq.connections import RedisSettings
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from pullups_bot.application.ports import Mutex, Repository
 from pullups_bot.application.service import ClubService
@@ -50,7 +52,13 @@ async def process_update(ctx: dict, payload: dict) -> None:
             await update.message.answer(escape(str(exc)))
     except TelegramRetryAfter as exc:
         raise Retry(defer=exc.retry_after + 1) from None
-    except (SheetsError, TelegramNetworkError, TelegramServerError) as exc:
+    except (
+        SheetsError,
+        TelegramNetworkError,
+        TelegramServerError,
+        RedisConnectionError,
+        RedisTimeoutError,
+    ) as exc:
         logger.warning("Update delayed: %s", type(exc).__name__)
         raise Retry(defer=min(300, 2 ** min(ctx["job_try"], 8))) from None
 

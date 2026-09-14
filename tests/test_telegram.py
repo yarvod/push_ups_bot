@@ -6,10 +6,10 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.base import BaseSession
 from aiogram.methods import GetChatMember, GetMe, SendMessage
-from aiogram.types import ChatMemberAdministrator, Message, Update, User
+from aiogram.types import ChatMemberAdministrator, ForceReply, Message, Update, User
 from dishka import Provider, Scope, make_async_container
 
-from pullups_bot.application.ports import Mutex, Repository
+from pullups_bot.application.ports import ManualPromptStore, Mutex, Repository
 from pullups_bot.application.service import ClubService
 from pullups_bot.bootstrap import create_dispatcher
 from pullups_bot.config import Settings
@@ -69,7 +69,7 @@ class RecordingSession(BaseSession):
 
 
 @pytest.fixture
-async def telegram(repo, service, settings, monkeypatch):
+async def telegram(repo, service, settings, monkeypatch, prompts):
     monkeypatch.setattr(handlers, "datetime", FrozenDateTime)
     session = RecordingSession()
     bot = Bot(
@@ -78,7 +78,7 @@ async def telegram(repo, service, settings, monkeypatch):
         default=DefaultBotProperties(parse_mode="HTML"),
     )
     provider = Provider(scope=Scope.APP)
-    for tp in (Settings, Repository, Mutex, ClubService, Bot):
+    for tp in (Settings, Repository, Mutex, ClubService, Bot, ManualPromptStore):
         provider.from_context(tp)
     container = make_async_container(
         provider,
@@ -88,6 +88,7 @@ async def telegram(repo, service, settings, monkeypatch):
             Mutex: service.mutex,
             ClubService: service,
             Bot: bot,
+            ManualPromptStore: prompts,
         },
     )
     dispatcher = create_dispatcher(container)
@@ -197,7 +198,9 @@ async def test_reply_still_processes_commands_and_video(telegram, repo, content)
     dp, bot, session, _ = telegram
     fields = {"reply_to_message": reply_to(bot.id)}
     if content == "command":
-        fields.update(text="/done", entities=[{"type": "bot_command", "offset": 0, "length": 5}])
+        fields.update(
+            text="/done сегодня", entities=[{"type": "bot_command", "offset": 0, "length": 5}]
+        )
     else:
         fields["video_note"] = clip()
     await dp.feed_update(bot, message_update(**fields))
@@ -474,7 +477,9 @@ async def test_manual_command_injection(telegram, repo):
     dp, bot, _, _ = telegram
     await dp.feed_update(
         bot,
-        message_update(text="/done", entities=[{"type": "bot_command", "offset": 0, "length": 5}]),
+        message_update(
+            text="/done сегодня", entities=[{"type": "bot_command", "offset": 0, "length": 5}]
+        ),
     )
     assert repo.days[1].statuses["Саня"] == Status.DONE
 
@@ -489,6 +494,128 @@ async def test_member_excuse_command(telegram, repo):
     )
     assert repo.days[1].statuses["Саня"] == Status.EXCUSED
     assert any(isinstance(call, SendMessage) and "Записал" in call.text for call in session.calls)
+
+
+def command_update(text, *, owner=False):
+    fields = {
+        "text": text,
+        "entities": [{"type": "bot_command", "offset": 0, "length": len(text.split()[0])}],
+    }
+    if owner:
+        fields["from"] = {
+            "id": 718724903,
+            "first_name": "Ярик",
+            "username": "yarvod",
+            "is_bot": False,
+        }
+    return message_update(**fields)
+
+
+def prompt_answer(bot, text, *, actor=101, message_id=11):
+    reply = reply_to(bot.id) | {"message_id": 500, "text": "📝 Отметка /excuse"}
+    return message_update(
+        text=text,
+        message_id=message_id,
+        reply_to_message=reply,
+        **{
+            "from": {
+                "id": actor,
+                "first_name": "user",
+                "username": "yarvod" if actor == 718724903 else "weebat",
+                "is_bot": False,
+            }
+        },
+    )
+
+
+@pytest.mark.parametrize("command", ["excuse", "done", "miss"])
+async def test_menu_command_waits_for_input(telegram, repo, command):
+    dp, bot, session, _ = telegram
+    await dp.feed_update(bot, command_update(f"/{command}"))
+    assert repo.writes == 0
+    assert isinstance(session.calls[-1].reply_markup, ForceReply)
+    answer = "заболел" if command == "excuse" else "сегодня"
+    await dp.feed_update(bot, prompt_answer(bot, answer))
+    assert repo.writes == 1
+    assert "Записал" in session.calls[-1].text
+    # A second reply cannot silently change an already completed request.
+    await dp.feed_update(bot, prompt_answer(bot, "другая причина", message_id=12))
+    assert repo.writes == 1
+    assert "уже выполнен" in session.calls[-1].text
+
+
+@pytest.mark.parametrize("via_prompt", [False, True])
+async def test_owner_can_excuse_past_day_in_russian_format(telegram, repo, via_prompt):
+    dp, bot, session, _ = telegram
+    if via_prompt:
+        await dp.feed_update(bot, command_update("/excuse@pushups_test_bot 05.09.2026", owner=True))
+        assert repo.writes == 0
+        update = prompt_answer(bot, "командировка", actor=718724903)
+    else:
+        update = command_update("/excuse@pushups_test_bot 05.09.2026 командировка", owner=True)
+    await dp.feed_update(bot, update)
+    assert repo.days[0].statuses["Ярик"] == Status.EXCUSED
+    assert repo.marks[-1][3] == "командировка"
+    assert "05.09.2026" in session.calls[-1].text
+
+
+async def test_prompt_cannot_be_used_by_another_user(telegram, repo):
+    dp, bot, session, _ = telegram
+    await dp.feed_update(bot, command_update("/excuse", owner=True))
+    await dp.feed_update(bot, prompt_answer(bot, "05.09.2026 болел"))
+    assert repo.writes == 0 and "чужой запрос" in session.calls[-1].text
+
+
+async def test_prompt_does_not_bypass_past_day_authorization(telegram, repo):
+    dp, bot, _, _ = telegram
+    await dp.feed_update(bot, command_update("/excuse"))
+    with pytest.raises(RuleError):
+        await dp.feed_update(bot, prompt_answer(bot, "05.09.2026 болел"))
+    assert repo.writes == 0
+
+
+async def test_cancel_prompt_prevents_later_submission(telegram, repo):
+    dp, bot, session, _ = telegram
+    await dp.feed_update(bot, command_update("/excuse"))
+    await dp.feed_update(bot, prompt_answer(bot, "отмена"))
+    await dp.feed_update(bot, prompt_answer(bot, "заболел", message_id=12))
+    assert repo.writes == 0 and "истёк или отменён" in session.calls[-1].text
+
+
+async def test_expired_prompt_is_not_banter(telegram, repo):
+    dp, bot, session, _ = telegram
+    await dp.feed_update(bot, prompt_answer(bot, "заболел"))
+    assert repo.writes == 0 and "Выбери команду заново" in session.calls[-1].text
+
+
+async def test_cannot_cancel_completed_mark(telegram, repo):
+    dp, bot, session, _ = telegram
+    await dp.feed_update(bot, command_update("/excuse"))
+    await dp.feed_update(bot, prompt_answer(bot, "болею"))
+    await dp.feed_update(bot, prompt_answer(bot, "отмена", message_id=12))
+    assert repo.days[1].statuses["Саня"] == Status.EXCUSED
+    assert "уже записана" in session.calls[-1].text
+
+
+async def test_repeated_status_still_acknowledges_new_reason(telegram, repo):
+    dp, bot, session, _ = telegram
+    await dp.feed_update(bot, command_update("/excuse болею"))
+    update = command_update("/excuse командировка")
+    update = update.model_copy(
+        update={"message": update.message.model_copy(update={"message_id": 11})}
+    )
+    await dp.feed_update(bot, update)
+    assert repo.marks[-1][3] == "командировка"
+    assert (
+        len(
+            [
+                call
+                for call in session.calls
+                if isinstance(call, SendMessage) and "Записал" in call.text
+            ]
+        )
+        == 2
+    )
 
 
 async def test_scheduler_sends_once_per_day(telegram, repo, settings, monkeypatch):

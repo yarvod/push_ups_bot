@@ -2,6 +2,7 @@ from contextlib import AbstractAsyncContextManager
 from datetime import date
 from typing import Protocol
 
+from pullups_bot.application.manual import ManualPrompt
 from pullups_bot.domain.models import Day, Member, Snapshot, Status
 
 
@@ -26,3 +27,9 @@ class Repository(Protocol):
 
 class Mutex(Protocol):
     def hold(self) -> AbstractAsyncContextManager[None]: ...
+
+
+class ManualPromptStore(Protocol):
+    async def save(self, chat_id: int, message_id: int, prompt: ManualPrompt) -> None: ...
+    async def get(self, chat_id: int, message_id: int) -> ManualPrompt | None: ...
+    async def delete(self, chat_id: int, message_id: int) -> None: ...

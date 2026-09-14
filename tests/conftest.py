@@ -27,6 +27,7 @@ class MemoryRepository:
         self.states = {"chat_id": "-10042", "started_on": "2026-09-06"}
         self.events = set()
         self.writes = 0
+        self.marks = []
 
     async def snapshot(self):
         return Snapshot(self.members, self.days)
@@ -45,6 +46,7 @@ class MemoryRepository:
             return False
         self.events.add(event_id)
         self.writes += 1
+        self.marks.append((day.date, member.name, status, reason))
         previous = day.statuses[member.name]
         day.statuses[member.name] = status
         return previous != status
@@ -63,6 +65,25 @@ class MemoryMutex:
     @asynccontextmanager
     async def hold(self):
         yield
+
+
+class MemoryPrompts:
+    def __init__(self):
+        self.items = {}
+
+    async def save(self, chat_id, message_id, prompt):
+        self.items[chat_id, message_id] = prompt
+
+    async def get(self, chat_id, message_id):
+        return self.items.get((chat_id, message_id))
+
+    async def delete(self, chat_id, message_id):
+        self.items.pop((chat_id, message_id), None)
+
+
+@pytest.fixture
+def prompts():
+    return MemoryPrompts()
 
 
 @pytest.fixture
