@@ -8,7 +8,15 @@ from aiohttp import ClientSession, web
 from arq import Retry
 
 from pullups_bot.banter_worker import answer_reply
-from pullups_bot.infrastructure.banter import LocalChatModel, ModelUnavailable, RedisBanterQueue
+from pullups_bot.infrastructure.banter import (
+    MAX_INPUT_CHARS,
+    MAX_QUOTE_CHARS,
+    LocalChatModel,
+    ModelUnavailable,
+    RedisBanterQueue,
+    chat_messages,
+    clean_answer,
+)
 from pullups_bot.presentation import banter
 
 
@@ -25,6 +33,54 @@ class MemoryRedis:
 
     async def enqueue_job(self, *args, **kwargs):
         self.jobs.append((args, kwargs))
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Конечно, вот шутка для тебя:",
+        "Вот шутка:",
+        "Кажется, я ошибся в предыдущих ответах. Если у вас есть другой вопрос, задайте его.",
+        "Я не могу это сделать.",
+        "Извините, но я не могу продолжить этот разговор в таком формате.",
+    ],
+)
+def test_empty_preambles_and_model_excuses_are_unavailable(answer):
+    with pytest.raises(ModelUnavailable):
+        clean_answer(answer)
+
+
+def test_preamble_is_removed_without_losing_the_joke():
+    assert clean_answer("Конечно, вот шутка для тебя:\n\nМой пресс в отпуске.") == (
+        "Мой пресс в отпуске."
+    )
+
+
+def test_truncated_generation_is_unavailable():
+    with pytest.raises(ModelUnavailable):
+        clean_answer("Мой пресс как зарплата, потому что", "length")
+
+
+def test_model_repeating_the_user_instead_of_answering_is_unavailable():
+    with pytest.raises(ModelUnavailable):
+        clean_answer("Диван сегодня победил меня.", source="Сегодня диван меня победил")
+
+
+def test_old_boilerplate_is_not_fed_back_to_the_model():
+    messages = chat_messages("Увы", "Я не могу это сделать. Задайте другой вопрос.")
+    assert messages[-1]["content"] == "Бот: Шутка не удалась.\nРеплика: Увы"
+
+
+def test_direct_joke_request_is_not_distracted_by_the_old_quote():
+    messages = chat_messages("Ну пошути тогда", "Пивной надзор на связи")
+    assert messages[-1] == {"role": "user", "content": "Ну пошути тогда"}
+
+
+def test_changing_the_quote_preserves_the_cacheable_prompt_prefix():
+    first = chat_messages("привет", "Пора отжиматься")
+    second = chat_messages("привет", "Выручай, диван победил")
+    assert first[:-1] == second[:-1]
+    assert first[-1] != second[-1]
 
 
 class RecordingBot:
@@ -122,7 +178,7 @@ async def test_queue_deduplicates_source_and_limits_model_input():
     await RedisBanterQueue(redis).enqueue(-42, 10, "a" * 2000, "b" * 2000)
     args, kwargs = redis.jobs[0]
     assert args[:3] == ("answer_reply", -42, 10)
-    assert len(args[3]) == 600 and len(args[4]) == 300
+    assert len(args[3]) == MAX_INPUT_CHARS and len(args[4]) == MAX_QUOTE_CHARS
     assert kwargs["_queue_name"] == "pushups:banter"
     assert kwargs["_job_id"] == "banter:-42:10"
 
@@ -133,6 +189,9 @@ async def test_malformed_model_response_is_unavailable(settings, payload):
         data = await request.json()
         assert data["messages"][0]["role"] == "system"
         assert data["stream"] is False
+        assert data["chat_template_kwargs"] == {"enable_thinking": False}
+        assert data["cache_prompt"] is True
+        assert "stop" not in data
         return web.json_response(payload)
 
     app = web.Application()

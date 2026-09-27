@@ -8,6 +8,8 @@ x-app: &app
     REDIS_URL: redis://redis:6379/0
     GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google-service-account.json
     LLM_URL: http://llm:8080
+    LLM_TIMEOUT_SECONDS: "25"
+    LLM_MAX_TOKENS: "40"
   restart: unless-stopped
   init: true
   read_only: true
@@ -67,7 +69,7 @@ services:
 
   llm:
     image: ghcr.io/ggml-org/llama.cpp:server@sha256:00bd6c289c590e576948cb3639b8195e4d3e6dd6ba1d761f0e2b871fcd4df24f
-    command: [-m, /models/Vikhr-Qwen-2.5-0.5B-instruct-Q5_K_M.gguf, --host, 0.0.0.0, --port, "8080", --ctx-size, "1536", --threads, "1", --threads-batch, "1", --parallel, "1", --batch-size, "128", --ubatch-size, "64", --no-webui, --alias, banter]
+    command: [-m, /models/Qwen3-0.6B-Q4_K_M.gguf, --host, 0.0.0.0, --port, "8080", --ctx-size, "1536", --threads, "1", --threads-batch, "1", --parallel, "1", --batch-size, "128", --ubatch-size, "64", --no-webui, --alias, banter]
     user: "10001:10001"
     volumes:
       - ./models:/models:ro
