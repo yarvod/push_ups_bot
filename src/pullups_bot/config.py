@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     max_video_seconds: int = Field(default=600, ge=1)
     google_application_credentials: str = "secrets/google-service-account.json"
     redis_url: str = "redis://localhost:6379/0"
+    llm_url: str = "http://llm:8080"
+    llm_timeout_seconds: int = Field(default=45, ge=5, le=60)
+    llm_max_tokens: int = Field(default=64, ge=16, le=160)
 
     @field_validator("deadline_time", "reminder_time", "summary_time")
     @classmethod

@@ -81,6 +81,19 @@ class MemoryPrompts:
         self.items.pop((chat_id, message_id), None)
 
 
+class MemoryBanterQueue:
+    def __init__(self):
+        self.jobs = []
+
+    async def enqueue(self, chat_id, message_id, text, reply_text):
+        self.jobs.append((chat_id, message_id, text, reply_text))
+
+
+@pytest.fixture
+def banter_queue():
+    return MemoryBanterQueue()
+
+
 @pytest.fixture
 def prompts():
     return MemoryPrompts()

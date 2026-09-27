@@ -8,12 +8,12 @@ from aiogram.types import ChatMemberUpdated, Message, ReactionTypeEmoji, Update
 from dishka.integrations.aiogram import FromDishka
 
 from pullups_bot.application.manual import complete_manual
-from pullups_bot.application.ports import ManualPromptStore, Repository
+from pullups_bot.application.ports import BanterQueue, ManualPromptStore, Repository
 from pullups_bot.application.service import ClubService
 from pullups_bot.config import Settings
 from pullups_bot.domain.models import AdmissionPending, RuleError, Status, cutoff_at
 from pullups_bot.presentation.manual import PROMPT_PREFIX, handle_manual
-from pullups_bot.presentation.texts import debts, help_text, reply_banter, report, statistics
+from pullups_bot.presentation.texts import debts, help_text, report, statistics
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +255,7 @@ def create_router() -> Router:
         prompts: FromDishka[ManualPromptStore],
         service: FromDishka[ClubService],
         settings: FromDishka[Settings],
+        banter: FromDishka[BanterQueue],
     ):
         if await repository.state("chat_id") != str(message.chat.id):
             return
@@ -295,6 +296,8 @@ def create_router() -> Router:
         if (replied.text or "").startswith(PROMPT_PREFIX):
             await message.reply("Запрос истёк или отменён. Выбери команду заново.")
             return
-        await message.reply(reply_banter(message.message_id))
+        await banter.enqueue(
+            message.chat.id, message.message_id, message.text or "", replied.text or ""
+        )
 
     return router

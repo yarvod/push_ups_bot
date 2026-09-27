@@ -3,13 +3,21 @@ from collections.abc import AsyncIterator
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiohttp import ClientSession, ClientTimeout
 from arq.connections import ArqRedis, RedisSettings, create_pool
 from dishka import Provider, Scope, from_context, make_async_container, provide
 from dishka.integrations.aiogram import inject_router, setup_dishka
 
-from pullups_bot.application.ports import ManualPromptStore, Mutex, Repository
+from pullups_bot.application.ports import (
+    BanterQueue,
+    ChatModel,
+    ManualPromptStore,
+    Mutex,
+    Repository,
+)
 from pullups_bot.application.service import ClubService
 from pullups_bot.config import Settings
+from pullups_bot.infrastructure.banter import LocalChatModel, RedisBanterQueue
 from pullups_bot.infrastructure.locking import RedisMutex
 from pullups_bot.infrastructure.prompts import RedisManualPromptStore
 from pullups_bot.infrastructure.sheets import SheetsRepository
@@ -33,6 +41,17 @@ class AppProvider(Provider):
     @provide
     def prompts(self, redis: ArqRedis) -> ManualPromptStore:
         return RedisManualPromptStore(redis)
+
+    @provide
+    def banter_queue(self, redis: ArqRedis) -> BanterQueue:
+        return RedisBanterQueue(redis)
+
+    @provide
+    async def chat_model(self, settings: Settings) -> AsyncIterator[ChatModel]:
+        async with ClientSession(
+            timeout=ClientTimeout(total=settings.llm_timeout_seconds)
+        ) as session:
+            yield LocalChatModel(session, settings)
 
     @provide
     async def repository(self, settings: Settings) -> AsyncIterator[Repository]:

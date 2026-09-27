@@ -18,9 +18,10 @@ deploy() {
   fi
 
   git pull --ff-only origin main
+  bash scripts/download_model.sh
   docker compose config --quiet
   docker compose build bot
-  docker compose up -d --no-build --wait --wait-timeout 120 bot worker redis
+  docker compose up -d --no-build --wait --wait-timeout 180 bot worker redis banter llm
   docker compose ps
   echo "Развёрнут коммит $(git rev-parse --short HEAD)"
 }

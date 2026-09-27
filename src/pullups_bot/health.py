@@ -9,7 +9,8 @@ from pullups_bot.config import Settings
 async def check() -> bool:
     redis = Redis.from_url(Settings().redis_url)
     try:
-        key = "pushups:worker:health" if "worker" in sys.argv else "pushups:poller:health"
+        role = "banter" if "banter" in sys.argv else "worker" if "worker" in sys.argv else "poller"
+        key = f"pushups:{role}:health"
         return bool(await redis.exists(key))
     finally:
         await redis.aclose()

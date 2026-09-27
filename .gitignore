@@ -10,5 +10,6 @@ __pycache__/
 .mypy_cache/
 *.pyc
 backups/
+models/
 .DS_Store
 

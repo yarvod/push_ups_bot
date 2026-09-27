@@ -9,7 +9,7 @@ from aiogram.methods import GetChatMember, GetMe, SendMessage
 from aiogram.types import ChatMemberAdministrator, ForceReply, Message, Update, User
 from dishka import Provider, Scope, make_async_container
 
-from pullups_bot.application.ports import ManualPromptStore, Mutex, Repository
+from pullups_bot.application.ports import BanterQueue, ManualPromptStore, Mutex, Repository
 from pullups_bot.application.service import ClubService
 from pullups_bot.bootstrap import create_dispatcher
 from pullups_bot.config import Settings
@@ -69,7 +69,7 @@ class RecordingSession(BaseSession):
 
 
 @pytest.fixture
-async def telegram(repo, service, settings, monkeypatch, prompts):
+async def telegram(repo, service, settings, monkeypatch, prompts, banter_queue):
     monkeypatch.setattr(handlers, "datetime", FrozenDateTime)
     session = RecordingSession()
     bot = Bot(
@@ -78,7 +78,7 @@ async def telegram(repo, service, settings, monkeypatch, prompts):
         default=DefaultBotProperties(parse_mode="HTML"),
     )
     provider = Provider(scope=Scope.APP)
-    for tp in (Settings, Repository, Mutex, ClubService, Bot, ManualPromptStore):
+    for tp in (Settings, Repository, Mutex, ClubService, Bot, ManualPromptStore, BanterQueue):
         provider.from_context(tp)
     container = make_async_container(
         provider,
@@ -89,6 +89,7 @@ async def telegram(repo, service, settings, monkeypatch, prompts):
             ClubService: service,
             Bot: bot,
             ManualPromptStore: prompts,
+            BanterQueue: banter_queue,
         },
     )
     dispatcher = create_dispatcher(container)
@@ -162,21 +163,22 @@ def reply_to(author_id):
     }
 
 
-async def test_text_reply_to_bot_gets_banter(telegram, repo):
+async def test_text_reply_to_bot_queues_banter_without_blocking_commands(
+    telegram, repo, banter_queue
+):
     dp, bot, session, _ = telegram
     await dp.feed_update(
         bot, message_update(text="ну ты и бухгалтер", reply_to_message=reply_to(bot.id))
     )
-    replies = [call for call in session.calls if isinstance(call, SendMessage)]
-    assert len(replies) == 1 and "нахуй" in replies[0].text
-    assert replies[0].reply_parameters.message_id == 10
+    assert not session.calls
+    assert banter_queue.jobs == [(-10042, 10, "ну ты и бухгалтер", "Пивной надзор на связи")]
     assert repo.writes == 0
 
 
 @pytest.mark.parametrize(
     "case", ["private", "other_chat", "other_author", "bot_sender", "unknown_command"]
 )
-async def test_banter_is_limited_to_human_replies_in_club(telegram, case):
+async def test_banter_is_limited_to_human_replies_in_club(telegram, case, banter_queue):
     dp, bot, session, _ = telegram
     fields = {"text": "привет", "reply_to_message": reply_to(bot.id)}
     if case == "private":
@@ -191,10 +193,11 @@ async def test_banter_is_limited_to_human_replies_in_club(telegram, case):
         fields.update(text="/unknown", entities=[{"type": "bot_command", "offset": 0, "length": 8}])
     await dp.feed_update(bot, message_update(**fields))
     assert not session.calls
+    assert not banter_queue.jobs
 
 
 @pytest.mark.parametrize("content", ["command", "video"])
-async def test_reply_still_processes_commands_and_video(telegram, repo, content):
+async def test_reply_still_processes_commands_and_video(telegram, repo, content, banter_queue):
     dp, bot, session, _ = telegram
     fields = {"reply_to_message": reply_to(bot.id)}
     if content == "command":
@@ -206,6 +209,7 @@ async def test_reply_still_processes_commands_and_video(telegram, repo, content)
     await dp.feed_update(bot, message_update(**fields))
     assert repo.days[1].statuses["Саня"] == Status.DONE
     assert all("нахуй" not in call.text for call in session.calls if isinstance(call, SendMessage))
+    assert not banter_queue.jobs
 
 
 async def test_forwarded_video_rejected(telegram, repo):
@@ -529,7 +533,7 @@ def prompt_answer(bot, text, *, actor=101, message_id=11):
 
 
 @pytest.mark.parametrize("command", ["excuse", "done", "miss"])
-async def test_menu_command_waits_for_input(telegram, repo, command):
+async def test_menu_command_waits_for_input(telegram, repo, command, banter_queue):
     dp, bot, session, _ = telegram
     await dp.feed_update(bot, command_update(f"/{command}"))
     assert repo.writes == 0
@@ -542,6 +546,7 @@ async def test_menu_command_waits_for_input(telegram, repo, command):
     await dp.feed_update(bot, prompt_answer(bot, "другая причина", message_id=12))
     assert repo.writes == 1
     assert "уже выполнен" in session.calls[-1].text
+    assert not banter_queue.jobs
 
 
 @pytest.mark.parametrize("via_prompt", [False, True])
@@ -582,10 +587,11 @@ async def test_cancel_prompt_prevents_later_submission(telegram, repo):
     assert repo.writes == 0 and "истёк или отменён" in session.calls[-1].text
 
 
-async def test_expired_prompt_is_not_banter(telegram, repo):
+async def test_expired_prompt_is_not_banter(telegram, repo, banter_queue):
     dp, bot, session, _ = telegram
     await dp.feed_update(bot, prompt_answer(bot, "заболел"))
     assert repo.writes == 0 and "Выбери команду заново" in session.calls[-1].text
+    assert not banter_queue.jobs
 
 
 async def test_cannot_cancel_completed_mark(telegram, repo):

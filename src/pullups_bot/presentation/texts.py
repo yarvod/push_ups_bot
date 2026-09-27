@@ -5,17 +5,6 @@ from pullups_bot.config import Settings
 from pullups_bot.domain.models import Snapshot, Status, beer_debts, effective_status, missed_counts
 
 
-def reply_banter(message_id: int) -> str:
-    phrases = (
-        "Иди нахуй, но сначала отожмись. Порядок есть порядок 🍻",
-        "Иди нахуй — это направление. К полу — это упражнение. Не перепутай 😏",
-        "Нахуй иди, спортсмен. Со мной спорить — грудь не накачать 💪",
-        "Обращение принято и торжественно отправлено нахуй. Пивная бухгалтерия занята 🍻",
-        "Иди нахуй с уважением. А с отжиманиями — сюда, их я принимаю 💪",
-    )
-    return phrases[message_id % len(phrases)]
-
-
 def report(snapshot: Snapshot, now: datetime, settings: Settings) -> str:
     day = snapshot.day(now.date())
     lines = [f"💪 Отжимательный перекличник · {now:%d.%m.%Y}"]
