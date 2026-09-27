@@ -80,6 +80,7 @@ services:
     cpus: 0.75
     cpu_shares: 128
     mem_limit: 640m
+    memswap_limit: 640m
     healthcheck:
       test: [CMD, curl, -fsS, http://localhost:8080/health]
       interval: 15s
