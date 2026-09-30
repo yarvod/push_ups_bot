@@ -31,6 +31,12 @@ def clean_answer(
         answer,
         flags=re.IGNORECASE,
     ).strip()
+    if finish_reason == "length":
+        # The token cap can cut off a second sentence after a complete joke.
+        sentence_end = re.search(r"[.!?](?=\s|$)", answer)
+        if sentence_end is None:
+            raise ModelUnavailable("Truncated model response")
+        answer = answer[: sentence_end.end()]
     boilerplate = (
         "не могу это сделать",
         "не могу ответить",
@@ -47,7 +53,6 @@ def clean_answer(
     if (
         not answer
         or answer.endswith(":")
-        or finish_reason == "length"
         or any(phrase in answer.casefold() for phrase in boilerplate)
         or answer.casefold() in ("шутка не удалась.", "увы, шутка не удалась.")
     ):
@@ -108,32 +113,43 @@ class LocalChatModel:
         self.slot = asyncio.Semaphore(1)
 
     async def answer(self, text: str, reply_text: str) -> str:
+        messages = chat_messages(text, reply_text)
         try:
-            async with (
-                self.slot,
-                self.session.post(
-                    self.settings.llm_url.rstrip("/") + "/v1/chat/completions",
-                    json={
-                        "model": "banter",
-                        "messages": chat_messages(text, reply_text),
-                        "max_tokens": self.settings.llm_max_tokens,
-                        "temperature": 0.4,
-                        "top_p": 0.8,
-                        "top_k": 20,
-                        "min_p": 0,
-                        "cache_prompt": True,
-                        "chat_template_kwargs": {"enable_thinking": False},
-                        "stream": False,
-                    },
-                ) as response,
-            ):
-                response.raise_for_status()
-                payload = await response.json()
-            choice = payload["choices"][0]
-            answer = choice["message"]["content"]
-            if not isinstance(answer, str):
-                raise ModelUnavailable("Empty model response")
-            return clean_answer(answer, choice.get("finish_reason"), text, reply_text)
+            async with self.slot:
+                for attempt in range(2):
+                    async with self.session.post(
+                        self.settings.llm_url.rstrip("/") + "/v1/chat/completions",
+                        json={
+                            "model": "banter",
+                            "messages": messages,
+                            "max_tokens": self.settings.llm_max_tokens,
+                            "temperature": self.settings.llm_temperature,
+                            "top_p": 0.8,
+                            "top_k": 20,
+                            "min_p": 0,
+                            "presence_penalty": 1.0,
+                            "cache_prompt": True,
+                            "chat_template_kwargs": {"enable_thinking": False},
+                            "stream": False,
+                        },
+                    ) as response:
+                        response.raise_for_status()
+                        payload = await response.json()
+                    choice = payload["choices"][0]
+                    answer = choice["message"]["content"]
+                    try:
+                        if not isinstance(answer, str):
+                            raise ModelUnavailable("Empty model response")
+                        return clean_answer(answer, choice.get("finish_reason"), text, reply_text)
+                    except ModelUnavailable:
+                        if attempt:
+                            raise
+                        # Try a different sample while keeping the cached prompt prefix.
+                        messages[-1] = {
+                            "role": "user",
+                            "content": messages[-1]["content"] + "\nОтветь одной готовой шуткой.",
+                        }
+                raise ModelUnavailable("No usable model response")
         except (ClientError, TimeoutError, KeyError, IndexError, TypeError, ValueError) as exc:
             # Never log the request, reply, endpoint response or any credentials.
             raise ModelUnavailable(type(exc).__name__) from None

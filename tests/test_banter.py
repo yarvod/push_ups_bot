@@ -61,6 +61,12 @@ def test_truncated_generation_is_unavailable():
         clean_answer("Мой пресс как зарплата, потому что", "length")
 
 
+def test_complete_joke_is_saved_when_generation_trails_off():
+    assert clean_answer("Мой пресс ушёл в отпуск. А потом", "length") == (
+        "Мой пресс ушёл в отпуск."
+    )
+
+
 def test_model_repeating_the_user_instead_of_answering_is_unavailable():
     with pytest.raises(ModelUnavailable):
         clean_answer("Диван сегодня победил меня.", source="Сегодня диван меня победил")
@@ -191,6 +197,8 @@ async def test_malformed_model_response_is_unavailable(settings, payload):
         assert data["stream"] is False
         assert data["chat_template_kwargs"] == {"enable_thinking": False}
         assert data["cache_prompt"] is True
+        assert data["temperature"] == 0.8
+        assert data["presence_penalty"] == 1.0
         assert "stop" not in data
         return web.json_response(payload)
 
@@ -206,5 +214,37 @@ async def test_malformed_model_response_is_unavailable(settings, payload):
             configured = settings.model_copy(update={"llm_url": f"http://127.0.0.1:{port}"})
             with pytest.raises(ModelUnavailable):
                 await LocalChatModel(session, configured).answer("привет", "цитата")
+    finally:
+        await runner.cleanup()
+
+
+async def test_bad_first_joke_gets_one_more_attempt(settings):
+    requests = []
+
+    async def reply(request):
+        requests.append(await request.json())
+        content = (
+            "Конечно, вот шутка для тебя:"
+            if len(requests) == 1
+            else "Мой пресс как Wi-Fi: все верят, что он есть."
+        )
+        return web.json_response(
+            {"choices": [{"finish_reason": "stop", "message": {"content": content}}]}
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", reply)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = runner.addresses[0][1]
+    try:
+        async with ClientSession() as session:
+            configured = settings.model_copy(update={"llm_url": f"http://127.0.0.1:{port}"})
+            answer = await LocalChatModel(session, configured).answer("Ну пошути тогда", "Привет")
+        assert answer == "Мой пресс как Wi-Fi: все верят, что он есть."
+        assert len(requests) == 2
+        assert requests[1]["messages"][-1]["content"].endswith("Ответь одной готовой шуткой.")
     finally:
         await runner.cleanup()

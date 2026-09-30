@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     llm_url: str = "http://llm:8080"
     llm_timeout_seconds: int = Field(default=25, ge=5, le=60)
     llm_max_tokens: int = Field(default=40, ge=16, le=160)
+    llm_temperature: float = Field(default=0.8, ge=0, le=1.5)
 
     @field_validator("deadline_time", "reminder_time", "summary_time")
     @classmethod

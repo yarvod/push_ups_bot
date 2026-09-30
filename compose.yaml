@@ -10,6 +10,7 @@ x-app: &app
     LLM_URL: http://llm:8080
     LLM_TIMEOUT_SECONDS: "25"
     LLM_MAX_TOKENS: "40"
+    LLM_TEMPERATURE: "0.8"
   restart: unless-stopped
   init: true
   read_only: true
