@@ -175,6 +175,93 @@ async def test_text_reply_to_bot_queues_banter_without_blocking_commands(
     assert repo.writes == 0
 
 
+def mention_update(text, username="pushups_test_bot", **fields):
+    mention = f"@{username}"
+    return message_update(
+        text=f"{mention} {text}",
+        entities=[{"type": "mention", "offset": 0, "length": len(mention)}],
+        **fields,
+    )
+
+
+async def test_natural_reply_runs_manual_command(telegram, repo, banter_queue):
+    dp, bot, session, _ = telegram
+    await dp.feed_update(
+        bot, message_update(text="Отметь мне отжимания сегодня", reply_to_message=reply_to(bot.id))
+    )
+    assert repo.days[1].statuses["Саня"] == Status.DONE
+    assert "Записал" in session.calls[-1].text
+    assert not banter_queue.jobs
+
+
+async def test_natural_mention_runs_report(telegram, banter_queue):
+    dp, bot, session, _ = telegram
+    await dp.feed_update(bot, mention_update("Покажи долги по пиву"))
+    assert any(isinstance(call, SendMessage) and "должен" in call.text for call in session.calls)
+    assert not banter_queue.jobs
+
+
+async def test_mention_on_reply_to_other_user_still_routes(telegram, repo):
+    dp, bot, _, _ = telegram
+    await dp.feed_update(bot, mention_update("Я отжался", reply_to_message=reply_to(456)))
+    assert repo.days[1].statuses["Саня"] == Status.DONE
+
+
+async def test_other_mention_does_not_address_bot(telegram, repo, banter_queue):
+    dp, bot, _, _ = telegram
+    await dp.feed_update(bot, mention_update("Отметь мне отжимания", username="someone_else"))
+    assert repo.writes == 0
+    assert not banter_queue.jobs
+
+
+async def test_natural_owner_action_checks_rights(telegram, repo):
+    dp, bot, _, _ = telegram
+    with pytest.raises(RuleError):
+        await dp.feed_update(bot, mention_update("Отключи беседу"))
+    assert repo.states["chat_id"] == "-10042"
+
+
+async def test_natural_future_mark_keeps_service_restriction(telegram, repo):
+    dp, bot, _, _ = telegram
+    with pytest.raises(RuleError):
+        await dp.feed_update(bot, mention_update("Отметь мне отжимания завтра"))
+    assert repo.writes == 0
+
+
+async def test_natural_setup_in_inactive_chat_keeps_owner_check(telegram, repo):
+    dp, bot, _, _ = telegram
+    repo.states["chat_id"] = ""
+    with pytest.raises(RuleError):
+        await dp.feed_update(bot, mention_update("Подключи беседу"))
+    assert not repo.states["chat_id"]
+
+
+async def test_natural_owner_bind(telegram, repo):
+    dp, bot, _, _ = telegram
+    await dp.feed_update(
+        bot,
+        mention_update(
+            "Привяжи @weebat к Telegram ID 101",
+            **{
+                "from": {
+                    "id": 718724903,
+                    "first_name": "Ярик",
+                    "username": "yarvod",
+                    "is_bot": False,
+                }
+            },
+        ),
+    )
+    assert repo.states["member:Саня"] == "101"
+
+
+async def test_natural_chat_stays_banter(telegram, repo, banter_queue):
+    dp, bot, _, _ = telegram
+    await dp.feed_update(bot, mention_update("Ну пошути тогда"))
+    assert repo.writes == 0
+    assert banter_queue.jobs[-1][2].endswith("Ну пошути тогда")
+
+
 @pytest.mark.parametrize(
     "case", ["private", "other_chat", "other_author", "bot_sender", "unknown_command"]
 )

@@ -72,21 +72,12 @@ def test_model_repeating_the_user_instead_of_answering_is_unavailable():
         clean_answer("Диван сегодня победил меня.", source="Сегодня диван меня победил")
 
 
-def test_old_boilerplate_is_not_fed_back_to_the_model():
-    messages = chat_messages("Увы", "Я не могу это сделать. Задайте другой вопрос.")
-    assert messages[-1]["content"] == "Бот: Шутка не удалась.\nРеплика: Увы"
-
-
-def test_direct_joke_request_is_not_distracted_by_the_old_quote():
-    messages = chat_messages("Ну пошути тогда", "Пивной надзор на связи")
-    assert messages[-1] == {"role": "user", "content": "Ну пошути тогда"}
-
-
-def test_changing_the_quote_preserves_the_cacheable_prompt_prefix():
-    first = chat_messages("привет", "Пора отжиматься")
-    second = chat_messages("привет", "Выручай, диван победил")
-    assert first[:-1] == second[:-1]
-    assert first[-1] != second[-1]
+def test_model_prompt_contains_only_the_instruction_and_current_reply():
+    messages = chat_messages("Ну пошути тогда")
+    assert len(messages) == 2
+    assert messages[0]["role"] == "system"
+    assert "матом" in messages[0]["content"]
+    assert messages[1] == {"role": "user", "content": "Ну пошути тогда"}
 
 
 class RecordingBot:
@@ -194,6 +185,7 @@ async def test_malformed_model_response_is_unavailable(settings, payload):
     async def reply(request):
         data = await request.json()
         assert data["messages"][0]["role"] == "system"
+        assert len(data["messages"]) == 2
         assert data["stream"] is False
         assert data["chat_template_kwargs"] == {"enable_thinking": False}
         assert data["cache_prompt"] is True
@@ -226,7 +218,7 @@ async def test_bad_first_joke_gets_one_more_attempt(settings):
         content = (
             "Конечно, вот шутка для тебя:"
             if len(requests) == 1
-            else "Мой пресс как Wi-Fi: все верят, что он есть."
+            else "Да пошло оно нахуй, этот пресс опять в отпуске."
         )
         return web.json_response(
             {"choices": [{"finish_reason": "stop", "message": {"content": content}}]}
@@ -243,8 +235,8 @@ async def test_bad_first_joke_gets_one_more_attempt(settings):
         async with ClientSession() as session:
             configured = settings.model_copy(update={"llm_url": f"http://127.0.0.1:{port}"})
             answer = await LocalChatModel(session, configured).answer("Ну пошути тогда", "Привет")
-        assert answer == "Мой пресс как Wi-Fi: все верят, что он есть."
+        assert answer == "Да пошло оно нахуй, этот пресс опять в отпуске."
         assert len(requests) == 2
-        assert requests[1]["messages"][-1]["content"].endswith("Ответь одной готовой шуткой.")
+        assert requests[1]["messages"] == requests[0]["messages"]
     finally:
         await runner.cleanup()

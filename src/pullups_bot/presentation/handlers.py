@@ -12,6 +12,7 @@ from pullups_bot.application.ports import BanterQueue, ManualPromptStore, Reposi
 from pullups_bot.application.service import ClubService
 from pullups_bot.config import Settings
 from pullups_bot.domain.models import AdmissionPending, RuleError, Status, cutoff_at
+from pullups_bot.presentation.intent import parse_intent
 from pullups_bot.presentation.manual import PROMPT_PREFIX, handle_manual
 from pullups_bot.presentation.texts import debts, help_text, report, statistics
 
@@ -247,8 +248,8 @@ def create_router() -> Router:
             ]
             await message.reply(phrases[message.message_id % len(phrases)])
 
-    @router.message(F.text, F.reply_to_message)
-    async def bot_reply(
+    @router.message(F.text)
+    async def addressed_text(
         message: Message,
         bot: FromDishka[Bot],
         repository: FromDishka[Repository],
@@ -257,47 +258,90 @@ def create_router() -> Router:
         settings: FromDishka[Settings],
         banter: FromDishka[BanterQueue],
     ):
-        if await repository.state("chat_id") != str(message.chat.id):
-            return
         if not message.from_user or message.from_user.is_bot or message.sender_chat:
             return
         replied = message.reply_to_message
-        if not replied or not replied.from_user or replied.from_user.id != bot.id:
+        reply_to_bot = bool(replied and replied.from_user and replied.from_user.id == bot.id)
+        text = message.text or ""
+        mentions = [
+            entity.extract_from(text)
+            for entity in message.entities or []
+            if entity.type == "mention"
+        ]
+        bot_mention = ""
+        if mentions:
+            bot_user = await bot.get_me()
+            bot_mention = next(
+                (
+                    name
+                    for name in mentions
+                    if name.casefold() == f"@{bot_user.username}".casefold()
+                ),
+                "",
+            )
+        if not reply_to_bot and not bot_mention:
             return
         if any(entity.type == "bot_command" for entity in message.entities or []):
             return
-        prompt = await prompts.get(message.chat.id, replied.message_id)
-        if prompt:
-            if message.from_user.id != prompt.actor_id:
-                await message.reply("Это чужой запрос. Для своей отметки выбери команду в меню.")
-                return
-            if (message.text or "").strip().casefold() == "отмена":
-                if await repository.event_exists(
-                    f"manual-prompt:{message.chat.id}:{replied.message_id}"
-                ):
-                    await message.reply("Отметка уже записана. Измени её новой командой.")
+        active_chat = await repository.state("chat_id") == str(message.chat.id)
+        if not active_chat:
+            intent = parse_intent(text.replace(bot_mention, ""), datetime.now(settings.tz).date())
+            if intent and intent.command == "setup":
+                await setup(message, service, settings)
+            return
+        if reply_to_bot and replied:
+            prompt = await prompts.get(message.chat.id, replied.message_id)
+            if prompt:
+                if message.from_user.id != prompt.actor_id:
+                    await message.reply(
+                        "Это чужой запрос. Для своей отметки выбери команду в меню."
+                    )
                     return
-                await prompts.delete(message.chat.id, replied.message_id)
-                await message.reply("Отменил. Ничего не записано.")
+                if text.strip().casefold() == "отмена":
+                    if await repository.event_exists(
+                        f"manual-prompt:{message.chat.id}:{replied.message_id}"
+                    ):
+                        await message.reply("Отметка уже записана. Измени её новой командой.")
+                        return
+                    await prompts.delete(message.chat.id, replied.message_id)
+                    await message.reply("Отменил. Ничего не записано.")
+                    return
+                arguments = complete_manual(prompt, text)
+                await handle_manual(
+                    message,
+                    prompt.command,
+                    arguments,
+                    service,
+                    prompts,
+                    repository,
+                    default_day=date.fromisoformat(prompt.day),
+                    prompt_id=replied.message_id,
+                    now=datetime.now(settings.tz),
+                )
                 return
-            arguments = complete_manual(prompt, message.text or "")
-            await handle_manual(
-                message,
-                prompt.command,
-                arguments,
-                service,
-                prompts,
-                repository,
-                default_day=date.fromisoformat(prompt.day),
-                prompt_id=replied.message_id,
-                now=datetime.now(settings.tz),
-            )
+            if (replied.text or "").startswith(PROMPT_PREFIX):
+                await message.reply("Запрос истёк или отменён. Выбери команду заново.")
+                return
+
+        intent = parse_intent(text.replace(bot_mention, ""), datetime.now(settings.tz).date())
+        if intent:
+            command = CommandObject(command=intent.command, args=intent.args)
+            if intent.command == "setup":
+                await setup(message, service, settings)
+            elif intent.command == "unbind":
+                await unbind(message, service, repository, settings)
+            elif intent.command == "bind":
+                await bind(message, command, service, repository, settings)
+            elif intent.command == "help":
+                await help_command(message, settings, service)
+            elif intent.command in {"today", "stats", "debts", "sheet"}:
+                await summary(message, command, service, repository, settings)
+            else:
+                await manual(message, command, service, settings, prompts, repository)
             return
-        if (replied.text or "").startswith(PROMPT_PREFIX):
-            await message.reply("Запрос истёк или отменён. Выбери команду заново.")
-            return
+
         await banter.enqueue(
-            message.chat.id, message.message_id, message.text or "", replied.text or ""
+            message.chat.id, message.message_id, text, (replied.text or "") if replied else ""
         )
 
     return router
