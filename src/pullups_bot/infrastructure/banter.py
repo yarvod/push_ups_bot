@@ -8,7 +8,10 @@ from arq.connections import ArqRedis
 from pullups_bot.config import Settings
 
 BANTER_QUEUE = "pushups:banter"
-SYSTEM_PROMPT = "Ты Пивной надзор. Шути в ответ по-русски дерзко, с матом и сарказмом."
+SYSTEM_PROMPT = (
+    "Ты Пивной надзор. Ответь одной короткой дерзкой шуткой по-русски, "
+    "можно с матом. Сразу шутка, без вступления."
+)
 MAX_INPUT_CHARS = 240
 MAX_QUOTE_CHARS = 80
 
@@ -94,36 +97,29 @@ class LocalChatModel:
         messages = chat_messages(text)
         try:
             async with self.slot:
-                for attempt in range(2):
-                    async with self.session.post(
-                        self.settings.llm_url.rstrip("/") + "/v1/chat/completions",
-                        json={
-                            "model": "banter",
-                            "messages": messages,
-                            "max_tokens": self.settings.llm_max_tokens,
-                            "temperature": self.settings.llm_temperature,
-                            "top_p": 0.8,
-                            "top_k": 20,
-                            "min_p": 0,
-                            "presence_penalty": 1.0,
-                            "cache_prompt": True,
-                            "chat_template_kwargs": {"enable_thinking": False},
-                            "stream": False,
-                        },
-                    ) as response:
-                        response.raise_for_status()
-                        payload = await response.json()
-                    choice = payload["choices"][0]
-                    answer = choice["message"]["content"]
-                    try:
-                        if not isinstance(answer, str):
-                            raise ModelUnavailable("Empty model response")
-                        return clean_answer(answer, choice.get("finish_reason"), text)
-                    except ModelUnavailable:
-                        if attempt:
-                            raise
-                        # Resample the same short prompt once before using the fallback.
-                raise ModelUnavailable("No usable model response")
+                async with self.session.post(
+                    self.settings.llm_url.rstrip("/") + "/v1/chat/completions",
+                    json={
+                        "model": "banter",
+                        "messages": messages,
+                        "max_tokens": self.settings.llm_max_tokens,
+                        "temperature": self.settings.llm_temperature,
+                        "top_p": 0.8,
+                        "top_k": 20,
+                        "min_p": 0,
+                        "presence_penalty": 1.0,
+                        "cache_prompt": True,
+                        "chat_template_kwargs": {"enable_thinking": False},
+                        "stream": False,
+                    },
+                ) as response:
+                    response.raise_for_status()
+                    payload = await response.json()
+                choice = payload["choices"][0]
+                answer = choice["message"]["content"]
+                if not isinstance(answer, str):
+                    raise ModelUnavailable("Empty model response")
+                return clean_answer(answer, choice.get("finish_reason"), text)
         except (ClientError, TimeoutError, KeyError, IndexError, TypeError, ValueError) as exc:
             # Never log the request, reply, endpoint response or any credentials.
             raise ModelUnavailable(type(exc).__name__) from None

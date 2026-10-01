@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import zlib
 from contextlib import suppress
 
 from aiogram import Bot
@@ -11,7 +12,18 @@ from pullups_bot.infrastructure.banter import ModelUnavailable
 logger = logging.getLogger(__name__)
 THINKING_FRAMES = ("🧠 Думаю ⠋", "🧠 Думаю ⠙", "🧠 Думаю ⠹", "🧠 Думаю ⠸")
 ANIMATION_INTERVAL = 2.5
-FALLBACK = "Думал, думал, но не смог придумать ответ 😅 Попробуй ещё раз."
+FALLBACK_JOKES = (
+    "Диван опять победил. У него, сука, преимущество домашнего поля.",
+    "Мой пресс ушёл в отпуск и даже открытку не прислал.",
+    "План был мощный. Потом я прилёг обсудить его с диваном.",
+    "Сегодня я отжался от работы. Техника была безупречная.",
+    "Пивной надзор докладывает: мотивация снова скрылась с места тренировки.",
+)
+
+
+def fallback_answer(text: str, message_id: int) -> str:
+    key = f"{message_id}:{text}".encode()
+    return FALLBACK_JOKES[zlib.crc32(key) % len(FALLBACK_JOKES)]
 
 
 async def animate(bot: Bot, chat_id: int, message_id: int) -> None:
@@ -44,10 +56,10 @@ async def generate_answer(
     try:
         async with asyncio.timeout(timeout_seconds):
             answer = await model.answer(text, reply_text)
-        return answer.strip()[:1000] or FALLBACK
+        return answer.strip()[:1000] or fallback_answer(text, thinking_id)
     except (ModelUnavailable, TimeoutError) as exc:
         logger.info("Banter fallback: %s", type(exc).__name__)
-        return FALLBACK
+        return fallback_answer(text, thinking_id)
     finally:
         animation.cancel()
         with suppress(asyncio.CancelledError):

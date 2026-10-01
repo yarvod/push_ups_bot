@@ -8,7 +8,7 @@ x-app: &app
     REDIS_URL: redis://redis:6379/0
     GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google-service-account.json
     LLM_URL: http://llm:8080
-    LLM_TIMEOUT_SECONDS: "25"
+    LLM_TIMEOUT_SECONDS: "15"
     LLM_MAX_TOKENS: "40"
     LLM_TEMPERATURE: "0.8"
   restart: unless-stopped
@@ -82,8 +82,8 @@ services:
     security_opt: [no-new-privileges:true]
     cpus: 0.75
     cpu_shares: 128
-    mem_limit: 640m
-    memswap_limit: 640m
+    mem_limit: 1g
+    memswap_limit: 1g
     healthcheck:
       test: [CMD, curl, -fsS, http://localhost:8080/health]
       interval: 15s

@@ -12,7 +12,7 @@ from pullups_bot.application.ports import BanterQueue, ManualPromptStore, Reposi
 from pullups_bot.application.service import ClubService
 from pullups_bot.config import Settings
 from pullups_bot.domain.models import AdmissionPending, RuleError, Status, cutoff_at
-from pullups_bot.presentation.intent import parse_intent
+from pullups_bot.presentation.intent import looks_like_command, parse_intent
 from pullups_bot.presentation.manual import PROMPT_PREFIX, handle_manual
 from pullups_bot.presentation.texts import debts, help_text, report, statistics
 
@@ -268,6 +268,10 @@ def create_router() -> Router:
             for entity in message.entities or []
             if entity.type == "mention"
         ]
+        direct_mention = any(
+            entity.type == "text_mention" and entity.user and entity.user.id == bot.id
+            for entity in message.entities or []
+        )
         bot_mention = ""
         if mentions:
             bot_user = await bot.get_me()
@@ -279,7 +283,7 @@ def create_router() -> Router:
                 ),
                 "",
             )
-        if not reply_to_bot and not bot_mention:
+        if not reply_to_bot and not bot_mention and not direct_mention:
             return
         if any(entity.type == "bot_command" for entity in message.entities or []):
             return
@@ -323,7 +327,8 @@ def create_router() -> Router:
                 await message.reply("Запрос истёк или отменён. Выбери команду заново.")
                 return
 
-        intent = parse_intent(text.replace(bot_mention, ""), datetime.now(settings.tz).date())
+        request_text = text.replace(bot_mention, "")
+        intent = parse_intent(request_text, datetime.now(settings.tz).date())
         if intent:
             command = CommandObject(command=intent.command, args=intent.args)
             if intent.command == "setup":
@@ -338,6 +343,13 @@ def create_router() -> Router:
                 await summary(message, command, service, repository, settings)
             else:
                 await manual(message, command, service, settings, prompts, repository)
+            return
+
+        if looks_like_command(request_text):
+            await message.reply(
+                "Похоже на команду, но я не понял действие. Напиши, например: "
+                "«покажи долги», «я отжался» или «поставь уважительную, я заболел»."
+            )
             return
 
         await banter.enqueue(

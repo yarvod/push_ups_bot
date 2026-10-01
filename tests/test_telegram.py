@@ -262,6 +262,37 @@ async def test_natural_chat_stays_banter(telegram, repo, banter_queue):
     assert banter_queue.jobs[-1][2].endswith("Ну пошути тогда")
 
 
+async def test_unclear_natural_command_gets_prompt_instead_of_slow_banter(
+    telegram, repo, banter_queue
+):
+    dp, bot, session, _ = telegram
+    await dp.feed_update(bot, mention_update("Что с моими отжиманиями?"))
+    assert repo.writes == 0
+    assert not banter_queue.jobs
+    assert "не понял действие" in session.calls[-1].text
+
+
+async def test_text_mention_of_bot_is_addressed(telegram, banter_queue):
+    dp, bot, session, _ = telegram
+    text = "бот, покажи долги"
+    await dp.feed_update(
+        bot,
+        message_update(
+            text=text,
+            entities=[
+                {
+                    "type": "text_mention",
+                    "offset": 0,
+                    "length": 3,
+                    "user": {"id": bot.id, "first_name": "bot", "is_bot": True},
+                }
+            ],
+        ),
+    )
+    assert any(isinstance(call, SendMessage) and "должен" in call.text for call in session.calls)
+    assert not banter_queue.jobs
+
+
 @pytest.mark.parametrize(
     "case", ["private", "other_chat", "other_author", "bot_sender", "unknown_command"]
 )

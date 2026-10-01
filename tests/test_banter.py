@@ -153,7 +153,8 @@ async def test_model_failure_replaces_thinking_with_fallback(failure):
         wait=asyncio.Event() if failure == "timeout" else None,
     )
     await answer_reply(context(bot, model, timeout=0.01), -42, 10, "hi", "bot")
-    assert bot.edits[-1][0] == banter.FALLBACK
+    assert bot.edits[-1][0] == banter.fallback_answer("hi", 500)
+    assert "не смог" not in bot.edits[-1][0]
     assert len(bot.sent) == 1
 
 
@@ -210,16 +211,12 @@ async def test_malformed_model_response_is_unavailable(settings, payload):
         await runner.cleanup()
 
 
-async def test_bad_first_joke_gets_one_more_attempt(settings):
+async def test_bad_joke_does_not_start_another_slow_generation(settings):
     requests = []
 
     async def reply(request):
         requests.append(await request.json())
-        content = (
-            "Конечно, вот шутка для тебя:"
-            if len(requests) == 1
-            else "Да пошло оно нахуй, этот пресс опять в отпуске."
-        )
+        content = "Конечно, вот шутка для тебя:"
         return web.json_response(
             {"choices": [{"finish_reason": "stop", "message": {"content": content}}]}
         )
@@ -234,9 +231,8 @@ async def test_bad_first_joke_gets_one_more_attempt(settings):
     try:
         async with ClientSession() as session:
             configured = settings.model_copy(update={"llm_url": f"http://127.0.0.1:{port}"})
-            answer = await LocalChatModel(session, configured).answer("Ну пошути тогда", "Привет")
-        assert answer == "Да пошло оно нахуй, этот пресс опять в отпуске."
-        assert len(requests) == 2
-        assert requests[1]["messages"] == requests[0]["messages"]
+            with pytest.raises(ModelUnavailable):
+                await LocalChatModel(session, configured).answer("Ну пошути тогда", "Привет")
+        assert len(requests) == 1
     finally:
         await runner.cleanup()
